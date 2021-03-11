@@ -1,1 +1,7 @@
 Thesis/
+
+**/venv/
+**/.ipynb_checkpoints/
+
+**/slprj/
+**/*.slxc
