@@ -1,0 +1,42 @@
+Model Parameters
+================
+
+Side Windows
+------------
+windows_size            - [height width] of the large side-windows
+window_roof_size        - [height width] of the roof windows (approximated as                                            one large window as opposed to 
+                                            the four smaller windows in 
+                                            reality)
+surface_part            - ???
+U                       - heat transfer coefficient [W/m2K] (of the window?)
+g                       - total solar energy transmittance
+v_g = 0.65              - transmittance in visible range of the sunlight
+
+
+Roof
+----
+wall_size               - [length width] of the roof (considered flat)
+roof_position           - position angles of the roof
+
+
+Roof structure
+~~~~~~~~~~~~~~
+The roof is supposed to be made of
+    - 5cm wood
+    - 10cm insulation
+    - 5cm wood
+
+Data from https://simulationresearch.lbl.gov/modelica/releases/latest/help/Buildings_HeatTransfer_Data_Solids.html#Buildings.HeatTransfer.Data.Solids.Plywood
+
+node_thickness
+node_conductivity
+node_capacity
+node_density
+
+Floor
+-----
+ceiling_size
+layer_thickness
+layer_conductivity
+layer_capacity
+layer_density% Large side windows
