@@ -39,7 +39,6 @@ air_exchange_rate(:,2) = 2.0;
 % Set the initial temperature to be the measured initial temperature
 t0 = Exp_data.(exp_id).InsideTemp.values(1);
 
-% 
 power = [tin Heating_coeff .* (Exp_data.(exp_id).Power.values - 1.67 * 1000)];
 
 % Turn down the air exchange rate when the HVAC is not running
