@@ -26,25 +26,22 @@ HVAC_COP = 3;
 Heating_coeff = sign(Setpoint - InsideTemp);
 Heating_coeff(Heating_coeff == -1) = -1 * HVAC_COP;
 
-
-%% Set the model parameters
-
-surface_part = 0.1;
-
 %% Set the run parameters
 
 air_exchange_rate = tin;
-air_exchange_rate(:,2) = 2.0;
+air_exchange_rate(:,2) = 1.0;
 
 % Set the initial temperature to be the measured initial temperature
 t0 = Exp_data.(exp_id).InsideTemp.values(1);
 
-power = [tin Heating_coeff .* (Exp_data.(exp_id).Power.values - 1.67 * 1000)];
+power = Exp_data.(exp_id).Power.values - 1.67 * 1000;
+
+power = [tin Heating_coeff .* power];
+
 
 % Turn down the air exchange rate when the HVAC is not running
-night_air_exchange_rate = 0;
+night_air_exchange_rate = 0.5;
 air_exchange_rate(abs(power(:, 2)) < 100, 2) = night_air_exchange_rate;
-
 
 %% Run the simulation
 % Note: The simlulink model loads the data separately, includes the
@@ -53,16 +50,14 @@ load_system("polydome");
 set_param('polydome', 'StopTime', int2str(tin(end)));
 simout = sim("polydome");
 
+SimulatedTemp = simout.SimulatedTemp;
 %% Compare the simulation results with the measured values
-SimulatedTemp = simout.SimulatedTemp.Data;
-
 figure; hold on; grid minor;
 plot(tin, InsideTemp);
 plot(tin, OutsideTemp);
-plot(simout.tout, SimulatedTemp, 'LineWidth', 2);
-
-
+plot(SimulatedTemp, 'LineWidth', 2);
 legend('InsideTemp', 'OutsideTemp', 'SimulatedTemp');
+
 
 x0=500;
 y0=300;
@@ -75,3 +70,7 @@ title(exp_id);
 hold off;
 
 saveas(gcf, strcat(exp_id, '_simulation'), 'svg')
+
+%% Export simulated temperature to a .mat file for further use
+carnot_output_dir = strcat("../Data/CARNOT_output/",exp_id,"_carnot_temp.mat");
+save(carnot_output_dir, 'SimulatedTemp');
