@@ -8,6 +8,10 @@ import pandas as pd
 import gpflow
 import tensorflow as tf
 
+from gpflow.ci_utils import ci_niter
+
+import matplotlib.pyplot as plt
+
 from sklearn.preprocessing import MinMaxScaler
 
 import callbacks
@@ -43,44 +47,14 @@ class PIDcontroller:
         return sig_P + sig_I + sig_D
 
 
-
-class GP_MPCcontroller:
+class Base_MPCcontroller(object):
     def __init__(self, dict_cols, model = None, scaler = None, N_horizon = 10, recover_from_crash = False):
-
-
-        self.recover_from_crash = recover_from_crash
-
-        if self.recover_from_crash:
-            self.model = pickle.load(open("controller_model.pkl", 'rb'))
-            self.scaler = pickle.load(open("controller_scaler.pkl", 'rb'))
-            self.X_log = pickle.load(open("controller_X_log.pkl", 'rb'))
-            df = pd.read_pickle("controller_df.pkl")
-            self.recovery_signal = iter(df['SimulatedHeat'])
-
-
-        if model is not None:
-            # Model is already trained. Using as is.
-            if scaler is None: raise ValueError("Not allowed to pass a model without a scaler")
-            self.model = model
-            self.cs_model = callbacks.GPR("gpr", self.model)
-            self.scaler = scaler
-            self.scaler_helper = ScalerHelper(self.scaler)
-        else:
-            # No model has been passed. Setting up model initialization
-            self.model = None
-            self.nb_data = 500 + 1
-            self.ident_signal = get_random_signal(self.nb_data, signal_type = 'analog')
-
-
-            self.Pel = 2 * 6300
-            self.COP = 5.0
-
-            self.ident_signal = iter(self.Pel * self.COP * self.ident_signal)
-
 
         self.dict_cols = dict_cols
         self.max_lag = max([lag for lag,_ in self.dict_cols.values()])
         self.N_horizon = N_horizon
+        self.n_states = np.sum([len(cols) * lags for lags,cols in
+            self.dict_cols.values()])
         self.X_log = []
 
 
@@ -91,119 +65,50 @@ class GP_MPCcontroller:
             self.data_cols += cols
         self.data = np.empty((0, len(self.data_cols)))
 
+        # Dataset used for training
+        self.dataset_train_minsize = 500
+        self.dataset_train_maxsize = 500
+        self.dataset_train = np.empty((0, self.n_states))
+
         # The current weather forcast
         self.weather_forecast = None
 
         # Current measurements
         self.w, self.u, self.y = None, None, None
 
+        # Recover from a previous crash with precomputed values and continue
+        self.recover_from_crash = recover_from_crash
 
+        if self.recover_from_crash:
+            self.model = pickle.load(open("controller_model.pkl", 'rb'))
+            self.scaler = pickle.load(open("controller_scaler.pkl", 'rb'))
+            self.scaler_helper = ScalerHelper(self.scaler)
+            self.X_log = pickle.load(open("controller_X_log.pkl", 'rb'))
+            df = pd.read_pickle("controller_df.pkl")
+            self.recovery_signal = iter(df['SimulatedHeat'])
+            return
 
-    ###
-    # GPflow model training and update
-    ###
-    def _train_model(self):
-        """ Identify model from gathered data """
+        # Pre-existing model passed. Load all the necessary objects
+        if model is not None:
+            # Model is already trained. Using as is.
+            if scaler is None: raise ValueError("Not allowed to pass a model without a scaler")
+            self.model = model
+            self.cs_model = callbacks.GPR("gpr", self.model, self.n_states)
+            self.scaler = scaler
+            self.scaler_helper = ScalerHelper(self.scaler)
+        # No pre-existing model. Set up data acquisition and model training
+        else:
+            # No model has been passed. Setting up model initialization
+            self.model = None
 
-        nb_train_pts = self.nb_data - 1
-        ###
-        # Dataset
-        ###
-        df = pd.DataFrame(self.data[:nb_train_pts], columns = self.data_cols)
-        self.scaler = MinMaxScaler(feature_range = (-1, 1)) 
-        self.scaler_helper = ScalerHelper(self.scaler)
-        df_sc = get_scaled_df(df, self.dict_cols, self.scaler)
-        df_gpr_train = data_to_gpr(df_sc, self.dict_cols)
+            # Define an identification signal to be used first
+            self.Pel = 2 * 6300
+            self.COP = 5.0
 
-        df_input_train = df_gpr_train.drop(columns = self.dict_cols['w'][1] + self.dict_cols['u'][1] + self.dict_cols['y'][1])
-        df_output_train = df_gpr_train[self.dict_cols['y'][1]]
+            self.ident_signal = get_identification_signal(size = self.dataset_train_minsize)
+            self.ident_signal = iter(self.COP * self.Pel * self.ident_signal)
 
-        np_input_train = df_input_train.to_numpy()
-        np_output_train = df_output_train.to_numpy().reshape(-1, 1)
-
-        data_train = (np_input_train, np_output_train)
-
-        df_test = pd.DataFrame(self.data[nb_train_pts:], columns = self.data_cols)
-        df_test_sc = get_scaled_df(df_test, self.dict_cols, self.scaler)
-        df_gpr_test = data_to_gpr(df_test_sc, self.dict_cols)
-        df_input_test = df_gpr_test.drop(columns = self.dict_cols['w'][1] + self.dict_cols['u'][1] + self.dict_cols['y'][1])
-        df_output_test = df_gpr_test[self.dict_cols['y'][1]]
-        np_input_test = df_input_test.to_numpy()
-        np_output_test = df_output_test.to_numpy()
-
-        ###
-        # Kernel
-        ###
-
-        nb_dims = np_input_train.shape[1]
-        rational_dims = np.arange(0, (self.dict_cols['t'][0] + 1) * len(self.dict_cols['t'][1]), 1)
-        nb_rational_dims = len(rational_dims)
-        squared_dims = np.arange(nb_rational_dims, nb_dims, 1)
-        nb_squared_dims = len(squared_dims)
-
-        default_lscale = 75
-        while True:
-            try:
-
-                squared_l = np.linspace(default_lscale, 2*default_lscale, nb_squared_dims)
-                rational_l = np.linspace(default_lscale, 2*default_lscale, nb_rational_dims)
-
-                variance = tf.math.reduce_variance(np_input_train)
-
-                k0 = gpflow.kernels.SquaredExponential(lengthscales = squared_l, active_dims = squared_dims, variance = variance)
-                k1 = gpflow.kernels.Constant(variance = variance)
-                k2 = gpflow.kernels.RationalQuadratic(lengthscales = rational_l, active_dims = rational_dims, variance = variance)
-                k3 = gpflow.kernels.Periodic(k2)
-
-                k = (k0 + k1) * k2
-                k = k0
-
-                ###
-                # Model
-                ###
-
-                m = gpflow.models.GPR(
-                    data = data_train,
-                    kernel = k,
-                    mean_function = None,
-                )
-
-                ###
-                # Training
-                ###
-                print(f"Training a model with lscale:{default_lscale}")
-                opt = gpflow.optimizers.Scipy()
-                opt.minimize(m.training_loss, m.trainable_variables)
-                break
-            except:
-                print(f"Failed.Increasing lengthscale")
-                default_lscale += 5
-
-        ###
-        # Save model
-        ###
-        self.model = m
-        self.n_states = self.model.data[0].shape[1]
-
-#        # Manual model validation
-#        import matplotlib.pyplot as plt
-#
-#        plt.figure()
-#        plt.plot(data_train[1], label = 'real')
-#        mean, var = self.model.predict_f(data_train[0])
-#        plt.plot(mean, label = 'model')
-#        plt.legend()
-#        plt.show()
-#
-#        plt.figure()
-#        plt.plot(np_output_test, label = 'real')
-#        mean, var = self.model.predict_f(np_input_test)
-#        plt.plot(mean, label = 'model')
-#        plt.legend()
-#        plt.show()
-#
-#        import pdb; pdb.set_trace()
-        pass
+        return
 
     ###
     # Update measurements
@@ -218,17 +123,15 @@ class GP_MPCcontroller:
     def _add_input_measurement(self, u):
         self.u = np.array(u).reshape(1, -1)
 
+    def _add_measurement_set(self):
+        new_data = np.hstack([self.w, self.u, self.y])
+        self.data = np.vstack([self.data, new_data])
+        print(f"{self.data.shape[0]} data points. Newest: {new_data}")
+        self.w, self.u, self.y = None, None, None
+
     def set_weather_forecast(self, W):
         assert (W.shape[0] == self.N_horizon)
         self.weather_forecast = W
-
-    def update_model(self):
-        new_data = np.hstack([self.w, self.u, self.y])
-        print(f"Adding new data: {new_data}")
-        self.data = np.vstack([self.data, new_data])
-        print(f"Data size: {self.data.shape[0]}")
-        self.w, self.u, self.y = None, None, None
-        print("---")
 
     ###
     # Set up optimal problem solver
@@ -239,10 +142,11 @@ class GP_MPCcontroller:
         ###
         # Initialization
         ###
-        self.cs_model = callbacks.GPR("gpr", self.model)
+        self.cs_model = callbacks.GPR("gpr", self.model, self.n_states)
 
         T_set = 21
         T_set_sc = self.scaler_helper.scale_output(T_set)
+        self.T_set_sc = T_set_sc
 
 
         X = cs.MX.sym("X", self.N_horizon + 1, self.n_states)
@@ -311,7 +215,7 @@ class GP_MPCcontroller:
 
         prob = {'f': J, 'x': cs.vec(X), 'g': cs.vertcat(*g), 'p': p}
         options = {"ipopt": {"hessian_approximation": "limited-memory", "max_iter": 100,
-                             #"acceptable_tol": 1e-6, "tol": 1e-6,
+                             "acceptable_tol": 1e-4, "tol": 1e-4,
                              #"linear_solver": "ma57",
                              #"acceptable_obj_change_tol": 1e-5,
                              #"mu_strategy": "adaptive",
@@ -341,6 +245,7 @@ class GP_MPCcontroller:
             except StopIteration:
                 # Finished passing in the pre-existing control
                 # Switching to normal operation
+                self._setup_solver()
                 self.recover_from_crash = False
 
         # Training pre-loop
@@ -360,6 +265,10 @@ class GP_MPCcontroller:
 
 
         data_scaled = self.scaler.transform(self.data)
+        # Append a dummy row to data, to align data_to_gpr cols (which include measureemnt
+        # at time t, with the current measurements, that stop at t-1)
+        dummy_row = np.nan * np.ones((1, self.data.shape[1]))
+        data_scaled = np.vstack([data_scaled, dummy_row])
         df = pd.DataFrame(data_scaled, columns = self.data_cols)
         
         x0 = data_to_gpr(df, self.dict_cols).drop(
@@ -384,6 +293,8 @@ class GP_MPCcontroller:
 
         X = np.array(res['x'].reshape((self.N_horizon + 1, self.n_states)))
         self.X_log.append(X)
+        df_X = pd.DataFrame(X)
+        #import pdb; pdb.set_trace()
         u_idx = self.dict_cols['w'][0] * len(self.dict_cols['w'][1])
         # Take the first control action and apply it
         u = X[1, u_idx]
@@ -402,6 +313,363 @@ class GP_MPCcontroller:
         
         return
 
+
+
+class GP_MPCcontroller(Base_MPCcontroller):
+    def __init__(self, dict_cols, model = None, scaler = None, N_horizon = 10, recover_from_crash = False):
+        super().__init__(dict_cols, model, scaler, N_horizon, recover_from_crash)
+
+    ###
+    # GPflow model training and update
+    ###
+    def _train_model(self):
+        """ Identify model from gathered data """
+
+        nb_train_pts = self.dataset_train_minsize - 1
+        nb_train_pts = 500
+        ###
+        # Dataset
+        ###
+        df = pd.DataFrame(self.data[:nb_train_pts], columns = self.data_cols)
+        self.scaler = MinMaxScaler(feature_range = (-1, 1)) 
+        self.scaler_helper = ScalerHelper(self.scaler)
+        df_sc = get_scaled_df(df, self.dict_cols, self.scaler)
+        df_gpr_train = data_to_gpr(df_sc, self.dict_cols)
+
+        df_input_train = df_gpr_train.drop(columns = self.dict_cols['w'][1] + self.dict_cols['u'][1] + self.dict_cols['y'][1])
+        df_output_train = df_gpr_train[self.dict_cols['y'][1]]
+
+        np_input_train = df_input_train.to_numpy()
+        np_output_train = df_output_train.to_numpy().reshape(-1, 1)
+
+        data_train = (np_input_train, np_output_train)
+
+        df_test = pd.DataFrame(self.data[nb_train_pts:], columns = self.data_cols)
+        df_test_sc = get_scaled_df(df_test, self.dict_cols, self.scaler)
+        df_gpr_test = data_to_gpr(df_test_sc, self.dict_cols)
+        df_input_test = df_gpr_test.drop(columns = self.dict_cols['w'][1] + self.dict_cols['u'][1] + self.dict_cols['y'][1])
+        df_output_test = df_gpr_test[self.dict_cols['y'][1]]
+        np_input_test = df_input_test.to_numpy()
+        np_output_test = df_output_test.to_numpy()
+
+        ###
+        # Kernel
+        ###
+
+        nb_dims = np_input_train.shape[1]
+        rational_dims = np.arange(0, (self.dict_cols['t'][0] + 1) * len(self.dict_cols['t'][1]), 1)
+        nb_rational_dims = len(rational_dims)
+        squared_dims = np.arange(nb_rational_dims, nb_dims, 1)
+        nb_squared_dims = len(squared_dims)
+
+        default_lscale = 150
+        while True:
+            try:
+
+                squared_l = np.linspace(default_lscale, 2*default_lscale, nb_squared_dims)
+                rational_l = np.linspace(default_lscale, 2*default_lscale, nb_rational_dims)
+
+                variance = tf.math.reduce_variance(np_input_train)
+
+                k0 = gpflow.kernels.SquaredExponential(lengthscales = squared_l, active_dims = squared_dims, variance = variance)
+                k1 = gpflow.kernels.Constant(variance = variance)
+                k2 = gpflow.kernels.RationalQuadratic(lengthscales = rational_l, active_dims = rational_dims, variance = variance)
+                k3 = gpflow.kernels.Periodic(k2)
+
+                k = (k0 + k1) * k2
+                k = k0
+
+                ###
+                # Model
+                ###
+
+                m = gpflow.models.GPR(
+                    data = data_train,
+                    kernel = k,
+                    mean_function = None,
+                )
+
+                ###
+                # Training
+                ###
+                print(f"Training a model with lscale:{default_lscale}")
+                opt = gpflow.optimizers.Scipy()
+                opt.minimize(m.training_loss, m.trainable_variables)
+                break
+            except:
+                print(f"Failed.Increasing lengthscale")
+                default_lscale += 10
+
+        ###
+        # Save model
+        ###
+        self.model = m
+
+#        plt.figure()
+#
+#        # Testing on training data
+#        mean, var = m.predict_f(np_input_train)
+#
+#        plt.plot(df_input_train.index, np_output_train[:, :], label = 'Measured data')
+#        plt.plot(df_input_train.index, mean[:, :], label = 'Gaussian Process Prediction')
+#        plt.fill_between(
+#            df_input_train.index,
+#            mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
+#            mean[:, 0] + 1.96 * np.sqrt(var[:, 0]),
+#            alpha = 0.2
+#        )
+#        plt.show()
+#
+#        plt.figure()
+#        # Testing on testing data
+#        mean, var = m.predict_f(np_input_test)
+#
+#        plt.plot(df_input_test.index, np_output_test[:, :], label = 'Measured data')
+#        plt.plot(df_input_test.index, mean[:, :], label = 'Gaussian Process Prediction')
+#        plt.fill_between(
+#            df_input_test.index,
+#            mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
+#            mean[:, 0] + 1.96 * np.sqrt(var[:, 0]),
+#            alpha = 0.2
+#        )
+#        plt.show()
+#
+#
+#        import pdb; pdb.set_trace()
+#        plt.figure()
+#
+#        start_idx = 25
+#        nb_predictions = 25
+#        N_pred = 20
+#
+#        plt.figure()
+#
+#        y_name = self.dict_cols['y'][1][0]
+#        for idx in range(start_idx, start_idx + nb_predictions):
+#            df_iter = df_input_test.iloc[idx:(idx + N_pred)].copy()
+#            for idxx in range(N_pred - 1):
+#                idx_old = df_iter.index[idxx]
+#                idx_new = df_iter.index[idxx+1]
+#                mean, var = m.predict_f(df_iter.loc[idx_old, :].to_numpy().reshape(1, -1))
+#                df_iter.loc[idx_new, f'{y_name}_1'] = mean.numpy().flatten()
+#                for lag in range(2, self.dict_cols['y'][0] + 1):
+#                    df_iter.loc[idx_new, f"{y_name}_{lag}"] = df_iter.loc[idx_old, f"{y_name}_{lag-1}"]
+#
+#            mean_iter, var_iter = m.predict_f(df_iter.to_numpy())
+#            plt.plot(df_iter.index, mean_iter.numpy(), '.-', label = 'predicted', color = 'orange')
+#        plt.plot(df_output_test.iloc[start_idx:start_idx + nb_predictions + N_pred], 'o-', label = 'measured', color = 'darkblue')
+#        plt.title(f"Prediction over {N_pred} steps")
+#
+#        plt.show()
+
+        return
+
+
+    def update_model(self):
+        self._add_measurement_set()
+
+
+class SVGP_MPCcontroller(Base_MPCcontroller):
+    def __init__(self, dict_cols, model = None, scaler = None, N_horizon = 10, recover_from_crash = False):
+        super().__init__(dict_cols, model, scaler, N_horizon, recover_from_crash)
+
+        # Adaptive models update parameters
+        self.model_update_frequency = 100
+        self.pts_since_update = 0
+        
+        # Model log
+        self.model_log = []
+
+    ###
+    # GPflow model training and update
+    ###
+    def _train_model(self):
+        """ Identify model from gathered data """
+
+        #nb_train_pts = self.dataset_train_minsize - 1
+        nb_train_pts = self.data.shape[0]
+        ###
+        # Dataset
+        ###
+        df = pd.DataFrame(self.data[:nb_train_pts], columns = self.data_cols)
+        self.scaler = MinMaxScaler(feature_range = (-1, 1)) 
+        self.scaler_helper = ScalerHelper(self.scaler)
+        df_sc = get_scaled_df(df, self.dict_cols, self.scaler)
+        df_gpr_train = data_to_gpr(df_sc, self.dict_cols)
+
+        df_input_train = df_gpr_train.drop(columns = self.dict_cols['w'][1] + self.dict_cols['u'][1] + self.dict_cols['y'][1])
+        df_output_train = df_gpr_train[self.dict_cols['y'][1]]
+
+        np_input_train = df_input_train.to_numpy()
+        np_output_train = df_output_train.to_numpy().reshape(-1, 1)
+
+        data_train = (np_input_train, np_output_train)
+
+        ###
+        # Kernel
+        ###
+
+        nb_dims = np_input_train.shape[1]
+        rational_dims = np.arange(0, (self.dict_cols['t'][0] + 1) * len(self.dict_cols['t'][1]), 1)
+        nb_rational_dims = len(rational_dims)
+        squared_dims = np.arange(nb_rational_dims, nb_dims, 1)
+        nb_squared_dims = len(squared_dims)
+
+        default_lscale = 1
+
+        squared_l = np.linspace(default_lscale, 2*default_lscale, nb_squared_dims)
+        rational_l = np.linspace(default_lscale, 2*default_lscale, nb_rational_dims)
+
+        variance = tf.math.reduce_variance(np_input_train)
+
+        k0 = gpflow.kernels.SquaredExponential(lengthscales = squared_l, active_dims = squared_dims, variance = variance)
+        k1 = gpflow.kernels.Constant(variance = variance)
+        k2 = gpflow.kernels.RationalQuadratic(lengthscales = rational_l, active_dims = rational_dims, variance = variance)
+        k3 = gpflow.kernels.Periodic(k2)
+
+        k = (k0 + k1) * k2
+        k = k0
+
+        ###
+        # Model
+        ###
+
+        N = data_train[0].shape[0]
+        M = 150 # Number of inducing locations
+        Z = data_train[0][:M, :].copy()
+
+        m = gpflow.models.SVGP(k, gpflow.likelihoods.Gaussian(), Z, num_data = N)
+
+        elbo = tf.function(m.elbo)
+
+        ###
+        # Training
+        ###
+
+        minibatch_size = 100
+        train_dataset = tf.data.Dataset.from_tensor_slices(data_train).repeat().shuffle(N)
+
+        # Turn off training for inducing point locations
+        gpflow.set_trainable(m.inducing_variable, False)
+
+        def run_adam(model, iterations):
+            """
+            Utility function running the Adam optimizer
+
+            :param model: GPflow model
+            :param interations: number of iterations
+            """
+            # Create an Adam Optimizer action
+            logf = []
+            train_iter = iter(train_dataset.batch(minibatch_size))
+            training_loss = model.training_loss_closure(train_iter, compile=True)
+            optimizer = tf.optimizers.Adam()
+
+            @tf.function
+            def optimization_step():
+                optimizer.minimize(training_loss, model.trainable_variables)
+
+            for step in range(iterations):
+                optimization_step()
+                if step % 10 == 0:
+                    elbo = -training_loss().numpy()
+                    logf.append(elbo)
+            return logf
+
+        
+        maxiter = ci_niter(10000)
+        logf = run_adam(m, maxiter)
+
+        ###
+        # Save model
+        ###
+        self.model = m
+
+#        plt.figure()
+#
+#        # Testing on training data
+#        mean, var = m.predict_f(np_input_train)
+#
+#        plt.plot(df_input_train.index, np_output_train[:, :], label = 'Measured data')
+#        plt.plot(df_input_train.index, mean[:, :], label = 'Gaussian Process Prediction')
+#        plt.fill_between(
+#            df_input_train.index,
+#            mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
+#            mean[:, 0] + 1.96 * np.sqrt(var[:, 0]),
+#            alpha = 0.2
+#        )
+#        plt.show()
+#
+#        plt.figure()
+#        # Testing on testing data
+#        mean, var = m.predict_f(np_input_test)
+#
+#        plt.plot(df_input_test.index, np_output_test[:, :], label = 'Measured data')
+#        plt.plot(df_input_test.index, mean[:, :], label = 'Gaussian Process Prediction')
+#        plt.fill_between(
+#            df_input_test.index,
+#            mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
+#            mean[:, 0] + 1.96 * np.sqrt(var[:, 0]),
+#            alpha = 0.2
+#        )
+#        plt.show()
+#
+#
+#        plt.figure()
+#
+#        start_idx = 25
+#        nb_predictions = 25
+#        N_pred = 20
+#
+#        plt.figure()
+#
+#        y_name = self.dict_cols['y'][1][0]
+#        for idx in range(start_idx, start_idx + nb_predictions):
+#            df_iter = df_input_test.iloc[idx:(idx + N_pred)].copy()
+#            for idxx in range(N_pred - 1):
+#                idx_old = df_iter.index[idxx]
+#                idx_new = df_iter.index[idxx+1]
+#                mean, var = m.predict_f(df_iter.loc[idx_old, :].to_numpy().reshape(1, -1))
+#                df_iter.loc[idx_new, f'{y_name}_1'] = mean.numpy().flatten()
+#                for lag in range(2, self.dict_cols['y'][0] + 1):
+#                    df_iter.loc[idx_new, f"{y_name}_{lag}"] = df_iter.loc[idx_old, f"{y_name}_{lag-1}"]
+#
+#            mean_iter, var_iter = m.predict_f(df_iter.to_numpy())
+#            plt.plot(df_iter.index, mean_iter.numpy(), '.-', label = 'predicted', color = 'orange')
+#        plt.plot(df_output_test.iloc[start_idx:start_idx + nb_predictions + N_pred], 'o-', label = 'measured', color = 'darkblue')
+#        plt.title(f"Prediction over {N_pred} steps")
+#
+#        plt.show()
+        return
+
+
+    def update_model(self):
+        self._add_measurement_set()
+        if self.model is not None and not self.recover_from_crash:
+            print(f"Points since last update: {self.pts_since_update}")
+            if self.pts_since_update < self.model_update_frequency:
+                self.pts_since_update += 1
+            else:
+                print(f"Updating model after {self.pts_since_update} measurements")
+                # Append old model to log
+                self.model_log.append(self.model)
+                # Train new model
+                self._train_model()
+                # Re-initialize CasADi solver
+                self._setup_solver()
+                self.pts_since_update = 0
+                
+    # Redefine save_data since now we're also saving the model log
+    def save_data(self):
+        df = pd.DataFrame(self.data, columns = self.data_cols)
+        df.to_pickle("controller_df.pkl")
+
+        pickle.dump(self.scaler, open(Path("controller_scaler.pkl"), 'wb'))
+        pickle.dump(self.model, open(Path("controller_model.pkl"), 'wb'))
+        pickle.dump(self.X_log, open(Path("controller_X_log.pkl"), 'wb'))
+        pickle.dump(self.model_log, open(Path("controller_model_log.pkl"), 'wb'))
+        
+        return
 
 class TestController:
     def __init__(self):

@@ -6,11 +6,12 @@ import pickle
 
 import numpy as np
 
-from controllers import GP_MPCcontroller, TestController
+from controllers import *
 
 clients = ['measure', 'control', 'weather']
 
-N_horizon = 6
+N_horizon = 8
+print(f"[*] Controller Horizon {N_horizon}")
 
 HOST            = '127.0.0.1'
 PORT = {
@@ -55,7 +56,7 @@ dict_cols = {
     'y': (y_lags, y_cols)
 }
 
-controller = GP_MPCcontroller(dict_cols = dict_cols, N_horizon = N_horizon, recover_from_crash = False)
+controller = SVGP_MPCcontroller(dict_cols = dict_cols, N_horizon = N_horizon, recover_from_crash = False)
 
 # Enter TCP server loop
 while True:

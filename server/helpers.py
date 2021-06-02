@@ -1,9 +1,36 @@
 import pandas as pd
 import numpy as np
+
 import gpflow
+import tensorflow as tf
 
 from sklearn.exceptions import NotFittedError
 
+# Generator for tensorflow functions for a given model
+def get_model_evaluator(model):
+    @tf.function
+    def model_evaluator(tf_input):
+        preds = model.predict_f(tf_input)
+        return preds
+    return model_evaluator
+
+def get_grad_evaluator(model):
+    @tf.function
+    def grad_evaluator(tf_input):
+        with tf.GradientTape() as tape:
+            preds = model.predict_f(tf_input)
+        grads = tape.gradient(preds, tf_input)
+        return grads
+    return grad_evaluator
+
+def get_combined_evaluator(model):
+    @tf.function
+    def combined_evaluator(tf_input):
+        with tf.GradientTape() as tape:
+            preds = model.predict_f(tf_input)
+        grads = tape.gradient(preds, tf_input)
+        return preds, grads
+    return combined_evaluator
 
 def get_random_signal(nstep, a_range = (-1, 1), b_range = (2, 10), signal_type = 'analog'):
 
@@ -45,6 +72,20 @@ def get_random_signal(nstep, a_range = (-1, 1), b_range = (2, 10), signal_type =
         return prbs
     else:
         raise ValueError(signal_type)
+
+
+def get_identification_signal(size):
+    # Base random signal
+    rand_signal = get_random_signal(size, signal_type = 'prbs')
+    # Integrator (cumulative sum)
+    cum_signal = 3/size * np.ones((1, size))
+    cum_signal = np.cumsum(cum_signal)
+    # Combine signals and clip signal to [-1, 1] range
+    ident_signal = rand_signal + cum_signal
+    ident_signal = np.where(ident_signal < -1, -1, ident_signal)
+    ident_signal = np.where(ident_signal > 1, 1, ident_signal)
+
+    return ident_signal
 
 
 def get_scaled_df(df, dict_cols, scaler):

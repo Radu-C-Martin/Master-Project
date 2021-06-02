@@ -17,7 +17,7 @@ import casadi as cs
 
 import callbacks
 from helpers import *
-from controllers import GP_MPCcontroller
+from controllers import *
 
 from time import sleep
 
@@ -40,8 +40,7 @@ dict_cols = {
 
 N_horizon = 10
 
-
-controller = GP_MPCcontroller(dict_cols = dict_cols, N_horizon = N_horizon)
+controller = SVGP_MPCcontroller(dict_cols = dict_cols, N_horizon = N_horizon)
 
 
 
@@ -64,6 +63,4 @@ while True:
     
     idx += 1
 
-    if idx > 502:
-        import pdb; pdb.set_trace()
 pass
