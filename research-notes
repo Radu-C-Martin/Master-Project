@@ -6,3 +6,23 @@ Info on windows (transmittance, U-factor, etc.)
 
 Computing DNI/DHI from GHI and solar position: 
     https://plantpredict.com/algorithm/irradiance-radiation/
+    
+    
+Gaussian Process Kernel Cookbook:
+	https://www.cs.toronto.edu/~duvenaud/cookbook/
+	
+GPflow Manipulating Kernels:
+	https://gpflow.readthedocs.io/en/develop/notebooks/advanced/kernels.html
+	
+Neural Network Gaussian Process:
+	https://en.wikipedia.org/wiki/Neural_network_Gaussian_process
+	
+Sparse Gaussian Process Tutorial (github):
+	http://krasserm.github.io/2018/03/19/gaussian-processes/
+	http://krasserm.github.io/2020/12/12/gaussian-processes-sparse/
+	
+Sparse Gaussian Processes (youtube):
+	https://www.youtube.com/watch?v=sQmsQq_Jfi8
+	
+Deep Gaussian Processes (youtube):
+	https://www.youtube.com/watch?v=750fRY9-uq8

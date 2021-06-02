@@ -133,13 +133,16 @@ classdef gp_mpc_system < matlab.System & matlab.system.mixin.Propagates
             real_p = vertcat(vec(DM(w)), vec(DM([obj.u_lags obj.y_lags])));
             disp("Starting optimization")
             tic
-            %res = obj.casadi_solver('p', real_p, 'ubx', obj.ubx, 'lbx', obj.lbx);
+            res = obj.casadi_solver('p', real_p, 'ubx', obj.ubx, 'lbx', obj.lbx);
             t = toc;
             disp(t)
             u = obj.Pel * full(res.x(1));
+            u = 15000 * (20 - x);
             
             % Update the u lags
             obj.u_lags = [u, obj.u_lags(2:end-1)];
+            
+           
             
         end
 
