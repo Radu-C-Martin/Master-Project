@@ -76,10 +76,11 @@ def get_random_signal(nstep, a_range = (-1, 1), b_range = (2, 10), signal_type =
 
 def get_identification_signal(size):
     # Base random signal
-    rand_signal = get_random_signal(size, signal_type = 'prbs')
+    rand_signal = get_random_signal(size, signal_type = 'analog')
     # Integrator (cumulative sum)
     cum_signal = 3/size * np.ones((1, size))
     cum_signal = np.cumsum(cum_signal)
+    cum_signal = 0
     # Combine signals and clip signal to [-1, 1] range
     ident_signal = rand_signal + cum_signal
     ident_signal = np.where(ident_signal < -1, -1, ident_signal)
