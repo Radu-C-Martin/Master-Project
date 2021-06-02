@@ -1,7 +1,15 @@
 Thesis/
+Legacy-Polydome/
+
+Data/CARNOT_output/
+Data/Experimental_data_WDB/
+Data/Experimental_python
+Data/input_WDB.mat
 
 **/venv/
 **/.ipynb_checkpoints/
+**/__pycache__/
 
 **/slprj/
 **/*.slxc
+**/*.autosave
