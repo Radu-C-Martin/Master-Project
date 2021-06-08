@@ -1,8 +1,5 @@
 import socket
 import struct
-from time import sleep
-from pathlib import Path
-import pickle
 
 import numpy as np
 
@@ -56,7 +53,11 @@ dict_cols = {
     'y': (y_lags, y_cols)
 }
 
-controller = SVGP_MPCcontroller(dict_cols = dict_cols, N_horizon = N_horizon, recover_from_crash = False)
+controller = SVGP_MPCcontroller(
+                dict_cols = dict_cols,
+                N_horizon = N_horizon,
+                recover_from_crash = False
+)
 
 # Enter TCP server loop
 while True:
@@ -99,7 +100,6 @@ while True:
                     break
             if len(weather) == ((N_horizon + 1) *2):
                 weather = np.array(weather).reshape((2, N_horizon + 1)).T
-                pass
             else:
                 print("\nDid not get a complete weather prediction. Simulation ended?")
                 break
@@ -122,10 +122,8 @@ while True:
             controller.update_model()
 
     finally:
-        print(f"[-] Closing connection to simulink")
+        print("[-] Closing connection to simulink")
         for client in clients:
             conn[client].close()
-        print(f"[i] Dumping controller data")
+        print("[i] Dumping controller data")
         controller.save_data()
-
-

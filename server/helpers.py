@@ -32,6 +32,49 @@ def get_combined_evaluator(model):
         return preds, grads
     return combined_evaluator
 
+##################################
+# SIA norm Temperature Reference
+##################################
+
+def _get_tref_min(x):
+    X = [19, 23.5]
+    Y = [20.5, 22]
+    a, b = np.polyfit(X, Y, deg = 1)
+    y = a*x + b
+    if y > Y[1]:
+        y = Y[1]
+    elif y < Y[0]:
+        y = Y[0]
+    return y
+
+def _get_tref_max(x):
+    X = [12, 17.5]
+    Y = [24.5, 26.5]
+    a, b = np.polyfit(X, Y, deg = 1)
+    y = a*x + b
+    if y > Y[1]:
+        y = Y[1]
+    elif y < Y[0]:
+        y = Y[0]
+    return y
+
+def get_tref_range(x):
+    """
+    Returns the allowed range of reference Temperatures for a given 48h mean
+    outside temperature
+    """
+    tref_range = (_get_tref_min(x), _get_tref_max(x))
+    return tref_range
+
+def get_tref_mean(x):
+    """
+    Returns the mean reference temperature for a given 48h mean outside
+    temperature
+    """
+    tref_range = get_tref_range(x)
+    return 1/2*(tref_range[0] + tref_range[1])
+
+
 def get_random_signal(nstep, a_range = (-1, 1), b_range = (2, 10), signal_type = 'analog'):
 
     a = np.random.rand(nstep) * (a_range[1]-a_range[0]) + a_range[0] # range for amplitude
@@ -76,7 +119,7 @@ def get_random_signal(nstep, a_range = (-1, 1), b_range = (2, 10), signal_type =
 
 def get_identification_signal(size):
     # Base random signal
-    rand_signal = get_random_signal(size, signal_type = 'analog')
+    rand_signal = get_random_signal(size, signal_type = 'prbs')
     # Integrator (cumulative sum)
     cum_signal = 3/size * np.ones((1, size))
     cum_signal = np.cumsum(cum_signal)
