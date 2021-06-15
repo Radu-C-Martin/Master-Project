@@ -61,7 +61,7 @@ class PIDcontroller:
 class sysIDcontroller(object):
     def __init__(self, u_range = (-1, 1)):
         self.u_range = u_range
-        id_P = 10000
+        id_P = 30000
         id_I = 50000/(3 * 3600)
         id_D = 0
         self.PIDcontroller = PIDcontroller(P = id_P, I = id_I, D = id_D,
@@ -98,6 +98,20 @@ class Base_MPCcontroller(object):
             self.dict_cols.values()])
         self.X_log = []
 
+        # Adaptive models update parameters
+        self.model_update_frequency = (24 * 3600)/self.T_sample # once per day
+        self.pts_since_update = 0
+        
+        # Model log
+        self.model_log = []
+
+        ### Input range
+        # Define an identification signal to be used first
+        self.Pel = 2 * 6300
+        self.COP = 5.0
+
+        # Set up identification controller
+        self.u_range = self.COP * self.Pel * np.array([-1, 1])
 
         # Complete measurement history
         # Columns are: [SolRad, OutsideTemp] (Disturbance), Heat(Input), Temperature (Output)
@@ -107,8 +121,9 @@ class Base_MPCcontroller(object):
         self.data = np.empty((0, len(self.data_cols)))
 
         # Dataset used for training
-        self.dataset_train_minsize = 5 * (24*3600)/self.T_sample # 5 days worth
+        self.dataset_train_minsize = 1 * (24*3600)//self.T_sample # 5 days worth
         self.dataset_train_maxsize = np.iinfo(np.int32).max # maximum 32bit int
+        #self.dataset_train_maxsize = 5 * (24*3600)//self.T_sample # 5 days worth
         self.dataset_train = np.empty((0, self.n_states))
 
         # The current weather forcast
@@ -152,13 +167,7 @@ class Base_MPCcontroller(object):
             self.model = None
             self.id_mode = True
 
-            # Define an identification signal to be used first
-            self.Pel = 2 * 6300
-            self.COP = 5.0
-
-            # Set up identification controller
-            u_range = self.COP * self.Pel * np.array([-1, 1])
-            self.id_controller = sysIDcontroller(u_range)
+            self.id_controller = sysIDcontroller(self.u_range)
 
         return
 
@@ -283,6 +292,23 @@ class Base_MPCcontroller(object):
 
         print("Initialized casadi solver")
 
+    def _fit_scaler(self, nb_train_pts):
+        # Get the min/max values from the dataset
+        df = pd.DataFrame(self.data[-nb_train_pts:], columns = self.data_cols)
+
+        # Get the range of data in the dataset
+        df_range = df.describe().loc[['min', 'max'], :]
+        
+        # Manually overwrite the values for heat range
+        in_names = self.dict_cols['u'][1]
+        df_range.loc['min', in_names] = self.u_range[0]
+        df_range.loc['max', in_names] = self.u_range[1]
+
+        self.scaler = MinMaxScaler(feature_range = (-1, 1))
+        self.scaler.fit(df_range.to_numpy())
+        self.scaler_helper = ScalerHelper(self.scaler)
+        return
+
     def _train_model(self):
         """
         Placeholder function to silence linter warning
@@ -363,7 +389,6 @@ class Base_MPCcontroller(object):
         X = np.array(res['x'].reshape((self.N_horizon + 1, self.n_states)))
         self.X_log.append(X)
         df_X = pd.DataFrame(X)
-        #import pdb; pdb.set_trace()
         u_idx = self.dict_cols['w'][0] * len(self.dict_cols['w'][1])
         # Take the first control action and apply it
         u = X[1, u_idx]
@@ -372,6 +397,22 @@ class Base_MPCcontroller(object):
         self._add_input_measurement(u)
         return u
 
+    def update_model(self):
+        self._add_measurement_set()
+
+        if not self.id_mode and not self.recover_from_crash:
+            self.pts_since_update += 1
+
+            if self.pts_since_update >= self.model_update_frequency:
+                print(f"Updating model after {self.pts_since_update} measurements")
+                # Append old model to log
+                self.model_log.append(self.model)
+                # Train new model
+                self._train_model()
+                # Re-initialize CasADi solver
+                self._setup_solver()
+                self.pts_since_update = 0
+
     def save_data(self):
         df = pd.DataFrame(self.data, columns = self.data_cols)
         df.to_pickle("controller_df.pkl")
@@ -379,9 +420,7 @@ class Base_MPCcontroller(object):
         pickle.dump(self.scaler, open(Path("controller_scaler.pkl"), 'wb'))
         pickle.dump(self.model, open(Path("controller_model.pkl"), 'wb'))
         pickle.dump(self.X_log, open(Path("controller_X_log.pkl"), 'wb'))
-
-        return
-
+        pickle.dump(self.model_log, open(Path("controller_model_log.pkl"), 'wb'))
 
 
 class GP_MPCcontroller(Base_MPCcontroller):
@@ -394,15 +433,16 @@ class GP_MPCcontroller(Base_MPCcontroller):
     def _train_model(self):
         """ Identify model from gathered data """
 
-        nb_train_pts = self.dataset_train_minsize - 1
+        nb_train_pts = self.dataset_train_minsize
         ###
         # Dataset
         ###
         # Train the model on the last nb_train_pts
         df = pd.DataFrame(self.data[-nb_train_pts:], columns = self.data_cols)
-        self.scaler = MinMaxScaler(feature_range = (-1, 1)) 
-        self.scaler_helper = ScalerHelper(self.scaler)
-        df_sc = get_scaled_df(df, self.dict_cols, self.scaler)
+        self._fit_scaler(nb_train_pts)
+
+        np_sc = self.scaler.transform(df.to_numpy())
+        df_sc = pd.DataFrame(np_sc, index = df.index, columns = df.columns)
         df_gpr_train = data_to_gpr(df_sc, self.dict_cols)
 
         df_input_train = df_gpr_train.drop(columns = self.dict_cols['w'][1] + self.dict_cols['u'][1] + self.dict_cols['y'][1])
@@ -413,13 +453,13 @@ class GP_MPCcontroller(Base_MPCcontroller):
 
         data_train = (np_input_train, np_output_train)
 
-        df_test = pd.DataFrame(self.data[nb_train_pts:], columns = self.data_cols)
-        df_test_sc = get_scaled_df(df_test, self.dict_cols, self.scaler)
-        df_gpr_test = data_to_gpr(df_test_sc, self.dict_cols)
-        df_input_test = df_gpr_test.drop(columns = self.dict_cols['w'][1] + self.dict_cols['u'][1] + self.dict_cols['y'][1])
-        df_output_test = df_gpr_test[self.dict_cols['y'][1]]
-        np_input_test = df_input_test.to_numpy()
-        np_output_test = df_output_test.to_numpy()
+        #df_test = pd.DataFrame(self.data[nb_train_pts:], columns = self.data_cols)
+        #df_test_sc = get_scaled_df(df_test, self.dict_cols, self.scaler)
+        #df_gpr_test = data_to_gpr(df_test_sc, self.dict_cols)
+        #df_input_test = df_gpr_test.drop(columns = self.dict_cols['w'][1] + self.dict_cols['u'][1] + self.dict_cols['y'][1])
+        #df_output_test = df_gpr_test[self.dict_cols['y'][1]]
+        #np_input_test = df_input_test.to_numpy()
+        #np_output_test = df_output_test.to_numpy()
 
         ###
         # Kernel
@@ -431,7 +471,7 @@ class GP_MPCcontroller(Base_MPCcontroller):
         squared_dims = np.arange(nb_rational_dims, nb_dims, 1)
         nb_squared_dims = len(squared_dims)
 
-        default_lscale = 150
+        default_lscale = 1
         while True:
             try:
 
@@ -533,21 +573,10 @@ class GP_MPCcontroller(Base_MPCcontroller):
 
         return
 
-
-    def update_model(self):
-        self._add_measurement_set()
-
-
 class SVGP_MPCcontroller(Base_MPCcontroller):
     def __init__(self, dict_cols, model = None, scaler = None, N_horizon = 10, recover_from_crash = False):
         super().__init__(dict_cols, model, scaler, N_horizon, recover_from_crash)
 
-        # Adaptive models update parameters
-        self.model_update_frequency = (24 * 3600)/self.T_sample # once per day
-        self.pts_since_update = 0
-        
-        # Model log
-        self.model_log = []
 
     ###
     # GPflow model training and update
@@ -560,9 +589,11 @@ class SVGP_MPCcontroller(Base_MPCcontroller):
         # Dataset
         ###
         df = pd.DataFrame(self.data[-nb_train_pts:], columns = self.data_cols)
-        self.scaler = MinMaxScaler(feature_range = (-1, 1)) 
-        self.scaler_helper = ScalerHelper(self.scaler)
-        df_sc = get_scaled_df(df, self.dict_cols, self.scaler)
+        print(f"Training model on {df.shape[0]} datapoints")
+        self._fit_scaler(nb_train_pts)
+
+        np_sc = self.scaler.transform(df.to_numpy())
+        df_sc = pd.DataFrame(np_sc, index = df.index, columns = df.columns)
         df_gpr_train = data_to_gpr(df_sc, self.dict_cols)
 
         df_input_train = df_gpr_train.drop(columns = self.dict_cols['w'][1] + self.dict_cols['u'][1] + self.dict_cols['y'][1])
@@ -710,35 +741,7 @@ class SVGP_MPCcontroller(Base_MPCcontroller):
 #        plt.show()
         return
 
-
-    def update_model(self):
-        self._add_measurement_set()
-
-        if not self.id_mode and not self.recover_from_crash:
-            self.pts_since_update += 1
-
-            if self.pts_since_update >= self.model_update_frequency:
-                print(f"Updating model after {self.pts_since_update} measurements")
-                # Append old model to log
-                self.model_log.append(self.model)
-                # Train new model
-                self._train_model()
-                # Re-initialize CasADi solver
-                self._setup_solver()
-                self.pts_since_update = 0
-
-    # Redefine save_data since now we're also saving the model log
-    def save_data(self):
-        df = pd.DataFrame(self.data, columns = self.data_cols)
-        df.to_pickle("controller_df.pkl")
-
-        pickle.dump(self.scaler, open(Path("controller_scaler.pkl"), 'wb'))
-        pickle.dump(self.model, open(Path("controller_model.pkl"), 'wb'))
-        pickle.dump(self.X_log, open(Path("controller_X_log.pkl"), 'wb'))
-        pickle.dump(self.model_log, open(Path("controller_model_log.pkl"), 'wb'))
         
-        return
-
 class TestController:
     def __init__(self):
         return

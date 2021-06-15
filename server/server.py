@@ -46,6 +46,11 @@ w_lags = 1
 u_lags = 2
 y_lags = 3
 
+print(f"[*] t_lags: {t_lags}")
+print(f"[*] w_lags: {w_lags}")
+print(f"[*] u_lags: {u_lags}")
+print(f"[*] y_lags: {y_lags}")
+
 dict_cols = {
     't': (t_lags, t_cols),
     'w': (w_lags, w_cols),
