@@ -1,0 +1,13 @@
+SVGP model trained initially on 5 * 96 points and updated every 96 points,
+keeping all the historical data.
+
+l_w = 1, l_u = 2, l_y = 3
+
+The set temperature is computed according to the ISA standard
+
+==============
+The GP model is trained on the first 5 * 96 points
+
+l_w = 1, l_u = 1, l_y = 3
+
+
