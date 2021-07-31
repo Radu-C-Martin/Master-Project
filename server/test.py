@@ -21,6 +21,13 @@ from controllers import *
 
 from time import sleep
 
+####################
+# Define dict_cols #
+####################
+
+# dict_cols is used to compute the autoregressive lags that are passed to the GP
+# model at training/evaluation.
+
 t_cols = []
 w_cols = ['SolRad', 'OutsideTemp']
 u_cols = ['SimulatedHeat']

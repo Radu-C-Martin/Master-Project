@@ -19,6 +19,9 @@ from helpers import *
 
 
 class PIDcontroller:
+    """
+    Generic PID controller
+    """
     def __init__(self, P, I = 0, D = 0, arw_range = (-np.inf, np.inf)):
         self.P = P
         self.I = I
@@ -59,6 +62,10 @@ class PIDcontroller:
         return sig_P + sig_I + sig_D
 
 class sysIDcontroller(object):
+    """
+    Implementation of the PID controller with a disturbance signal, used for
+    gathering experimental data before training a GP model
+    """
     def __init__(self, u_range = (-1, 1)):
         self.u_range = u_range
         id_P = 30000
@@ -87,8 +94,19 @@ class sysIDcontroller(object):
         self.PIDcontroller.add_output_measurement(y)
 
 class Base_MPCcontroller(object):
+
+    """
+    Base Class for the MPC controller. Since the GP and SVGP controllers are
+    mostly the same, with differences only in training/evaluation of the models,
+    all the shared functions are implemented here, and the training/evaluation
+    are implemented for the GP/SVGP models individually.
+    """
+
+
     def __init__(self, dict_cols, model = None, scaler = None, N_horizon = 10, recover_from_crash = False):
 
+
+        # Sample time (seconds)
         self.T_sample = 15 * 60 # Used for update frequency and reference
                                 # calculation
         self.dict_cols = dict_cols
@@ -100,6 +118,7 @@ class Base_MPCcontroller(object):
 
         # Adaptive models update parameters
         self.model_update_frequency = (24 * 3600)/self.T_sample # once per day
+        self.model_update_frequency = 1000000
         self.pts_since_update = 0
         
         # Model log
@@ -107,7 +126,7 @@ class Base_MPCcontroller(object):
 
         ### Input range
         # Define an identification signal to be used first
-        self.Pel = 2 * 6300
+        self.Pel = 2 * 6300 # [W]
         self.COP = 5.0
 
         # Set up identification controller
@@ -121,7 +140,7 @@ class Base_MPCcontroller(object):
         self.data = np.empty((0, len(self.data_cols)))
 
         # Dataset used for training
-        self.dataset_train_minsize = 1 * (24*3600)//self.T_sample # 5 days worth
+        self.dataset_train_minsize = 5 * (24*3600)//self.T_sample # 5 days worth
         self.dataset_train_maxsize = np.iinfo(np.int32).max # maximum 32bit int
         #self.dataset_train_maxsize = 5 * (24*3600)//self.T_sample # 5 days worth
         self.dataset_train = np.empty((0, self.n_states))
@@ -514,63 +533,6 @@ class GP_MPCcontroller(Base_MPCcontroller):
         ###
         self.model = m
 
-#        plt.figure()
-#
-#        # Testing on training data
-#        mean, var = m.predict_f(np_input_train)
-#
-#        plt.plot(df_input_train.index, np_output_train[:, :], label = 'Measured data')
-#        plt.plot(df_input_train.index, mean[:, :], label = 'Gaussian Process Prediction')
-#        plt.fill_between(
-#            df_input_train.index,
-#            mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
-#            mean[:, 0] + 1.96 * np.sqrt(var[:, 0]),
-#            alpha = 0.2
-#        )
-#        plt.show()
-#
-#        plt.figure()
-#        # Testing on testing data
-#        mean, var = m.predict_f(np_input_test)
-#
-#        plt.plot(df_input_test.index, np_output_test[:, :], label = 'Measured data')
-#        plt.plot(df_input_test.index, mean[:, :], label = 'Gaussian Process Prediction')
-#        plt.fill_between(
-#            df_input_test.index,
-#            mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
-#            mean[:, 0] + 1.96 * np.sqrt(var[:, 0]),
-#            alpha = 0.2
-#        )
-#        plt.show()
-#
-#
-#        import pdb; pdb.set_trace()
-#        plt.figure()
-#
-#        start_idx = 25
-#        nb_predictions = 25
-#        N_pred = 20
-#
-#        plt.figure()
-#
-#        y_name = self.dict_cols['y'][1][0]
-#        for idx in range(start_idx, start_idx + nb_predictions):
-#            df_iter = df_input_test.iloc[idx:(idx + N_pred)].copy()
-#            for idxx in range(N_pred - 1):
-#                idx_old = df_iter.index[idxx]
-#                idx_new = df_iter.index[idxx+1]
-#                mean, var = m.predict_f(df_iter.loc[idx_old, :].to_numpy().reshape(1, -1))
-#                df_iter.loc[idx_new, f'{y_name}_1'] = mean.numpy().flatten()
-#                for lag in range(2, self.dict_cols['y'][0] + 1):
-#                    df_iter.loc[idx_new, f"{y_name}_{lag}"] = df_iter.loc[idx_old, f"{y_name}_{lag-1}"]
-#
-#            mean_iter, var_iter = m.predict_f(df_iter.to_numpy())
-#            plt.plot(df_iter.index, mean_iter.numpy(), '.-', label = 'predicted', color = 'orange')
-#        plt.plot(df_output_test.iloc[start_idx:start_idx + nb_predictions + N_pred], 'o-', label = 'measured', color = 'darkblue')
-#        plt.title(f"Prediction over {N_pred} steps")
-#
-#        plt.show()
-
         return
 
 class SVGP_MPCcontroller(Base_MPCcontroller):
@@ -684,61 +646,6 @@ class SVGP_MPCcontroller(Base_MPCcontroller):
         ###
         self.model = m
 
-#        plt.figure()
-#
-#        # Testing on training data
-#        mean, var = m.predict_f(np_input_train)
-#
-#        plt.plot(df_input_train.index, np_output_train[:, :], label = 'Measured data')
-#        plt.plot(df_input_train.index, mean[:, :], label = 'Gaussian Process Prediction')
-#        plt.fill_between(
-#            df_input_train.index,
-#            mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
-#            mean[:, 0] + 1.96 * np.sqrt(var[:, 0]),
-#            alpha = 0.2
-#        )
-#        plt.show()
-#
-#        plt.figure()
-#        # Testing on testing data
-#        mean, var = m.predict_f(np_input_test)
-#
-#        plt.plot(df_input_test.index, np_output_test[:, :], label = 'Measured data')
-#        plt.plot(df_input_test.index, mean[:, :], label = 'Gaussian Process Prediction')
-#        plt.fill_between(
-#            df_input_test.index,
-#            mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
-#            mean[:, 0] + 1.96 * np.sqrt(var[:, 0]),
-#            alpha = 0.2
-#        )
-#        plt.show()
-#
-#
-#        plt.figure()
-#
-#        start_idx = 25
-#        nb_predictions = 25
-#        N_pred = 20
-#
-#        plt.figure()
-#
-#        y_name = self.dict_cols['y'][1][0]
-#        for idx in range(start_idx, start_idx + nb_predictions):
-#            df_iter = df_input_test.iloc[idx:(idx + N_pred)].copy()
-#            for idxx in range(N_pred - 1):
-#                idx_old = df_iter.index[idxx]
-#                idx_new = df_iter.index[idxx+1]
-#                mean, var = m.predict_f(df_iter.loc[idx_old, :].to_numpy().reshape(1, -1))
-#                df_iter.loc[idx_new, f'{y_name}_1'] = mean.numpy().flatten()
-#                for lag in range(2, self.dict_cols['y'][0] + 1):
-#                    df_iter.loc[idx_new, f"{y_name}_{lag}"] = df_iter.loc[idx_old, f"{y_name}_{lag-1}"]
-#
-#            mean_iter, var_iter = m.predict_f(df_iter.to_numpy())
-#            plt.plot(df_iter.index, mean_iter.numpy(), '.-', label = 'predicted', color = 'orange')
-#        plt.plot(df_output_test.iloc[start_idx:start_idx + nb_predictions + N_pred], 'o-', label = 'measured', color = 'darkblue')
-#        plt.title(f"Prediction over {N_pred} steps")
-#
-#        plt.show()
         return
 
         
